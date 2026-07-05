@@ -3,7 +3,7 @@ from aiogram.filters import CommandStart
 from aiogram.types import Message
 
 from app.database.models import add_user
-from app.keyboards.contact import contact_keyboard
+from app.keyboards.contact import get_contact_keyboard
 
 router = Router()
 
@@ -26,5 +26,5 @@ async def start_command(message: Message):
 📱 প্রথমে আপনার মোবাইল নম্বর Verify করুন।
 
 নিচের "📱 Share Contact" বাটনে চাপুন।""",
-        reply_markup=contact_keyboard,
+        reply_markup=get_contact_keyboard()
     )
