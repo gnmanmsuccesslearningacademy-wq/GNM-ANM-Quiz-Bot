@@ -1,16 +1,37 @@
 from aiogram import Router, F
-from aiogram.types import Message
+from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
 from app.database.models import update_phone
-from app.keyboards.main_menu import main_menu
+from app.keyboards.main_menu import get_main_menu
 
 router = Router()
 
 
 class PhoneStates(StatesGroup):
     waiting_for_phone = State()
+
+
+@router.message(F.text == "📞 Contact")
+async def show_contact_options(message: Message):
+    """Show contact options"""
+    
+    text = """📞 **CONTACT US**
+
+Choose how to provide your contact:
+"""
+    
+    keyboard = ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="📱 Share Contact", request_contact=True)],
+            [KeyboardButton(text="✏️ Manual Entry")],
+            [KeyboardButton(text="Back")]
+        ],
+        resize_keyboard=True
+    )
+    
+    await message.answer(text, reply_markup=keyboard)
 
 
 @router.message(lambda message: message.contact is not None)
@@ -27,7 +48,7 @@ async def save_contact(message: Message, state: FSMContext):
 
     await message.answer(
         "✅ আপনার মোবাইল নম্বর সফলভাবে সংরক্ষণ করা হয়েছে।",
-        reply_markup=main_menu
+        reply_markup=get_main_menu()
     )
 
 
@@ -61,5 +82,13 @@ async def save_manual_phone(message: Message, state: FSMContext):
 
     await message.answer(
         "✅ আপনার মোবাইল নম্বর সফলভাবে সংরক্ষণ করা হয়েছে।",
-        reply_markup=main_menu
+        reply_markup=get_main_menu()
     )
+
+
+@router.message(F.text == "Back")
+async def go_back(message: Message):
+    """Go back to main menu"""
+    
+    from app.keyboards.main_menu import get_main_menu
+    await message.answer("Back to main menu", reply_markup=get_main_menu())

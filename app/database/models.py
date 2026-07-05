@@ -176,6 +176,38 @@ async def create_tables():
     )
     """)
 
+    # QUIZ SCHEDULE (Simple Daily Quiz)
+    await db.execute("""
+    CREATE TABLE IF NOT EXISTS quiz_schedule(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        quiz_name TEXT,
+        exam TEXT,
+        date TEXT,
+        time TEXT,
+        duration INTEGER,
+        question_limit INTEGER,
+        status TEXT DEFAULT 'pending',
+        group_message_id INTEGER,
+        created_by INTEGER,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    """)
+
+    # QUIZ RESULTS (Simple Quiz Results)
+    await db.execute("""
+    CREATE TABLE IF NOT EXISTS quiz_results(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        quiz_id INTEGER,
+        user_id INTEGER,
+        correct INTEGER DEFAULT 0,
+        wrong INTEGER DEFAULT 0,
+        score REAL DEFAULT 0,
+        submitted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (quiz_id) REFERENCES quiz_schedule(id),
+        FOREIGN KEY (user_id) REFERENCES users(user_id)
+    )
+    """)
+
     await db.commit()
     await db.close()
 
@@ -649,24 +681,55 @@ async def get_scheduled_quizzes():
 
 
 async def get_questions_by_exam(exam_name, limit=50):
-    """Get questions for a specific exam"""
+    """Get questions for a specific exam or related exam terms"""
     db = await get_db()
-    
+    exam_key = exam_name.strip().lower()
+
+    # Try exact exam/subject/chapter match first
     cursor = await db.execute(
         """
         SELECT *
         FROM questions
-        WHERE exam LIKE ? OR subject LIKE ?
+        WHERE LOWER(exam) = ? OR LOWER(subject) = ? OR LOWER(chapter) = ?
         ORDER BY RANDOM()
         LIMIT ?
         """,
-        (f"%{exam_name}%", f"%{exam_name}%", limit)
+        (exam_key, exam_key, exam_key, limit)
     )
-    
+
+    questions = await cursor.fetchall()
+    await cursor.close()
+
+    if questions:
+        await db.close()
+        return questions
+
+    # Fall back to tokenized partial search for broader match
+    tokens = [token.strip().lower() for token in exam_name.split() if token.strip()]
+    if not tokens:
+        await db.close()
+        return []
+
+    where_clauses = []
+    params = []
+    for token in tokens:
+        where_clauses.append("(LOWER(exam) LIKE ? OR LOWER(subject) LIKE ? OR LOWER(chapter) LIKE ?)")
+        params.extend([f"%{token}%", f"%{token}%", f"%{token}%"])
+
+    query = f"""
+        SELECT *
+        FROM questions
+        WHERE {' OR '.join(where_clauses)}
+        ORDER BY RANDOM()
+        LIMIT ?
+        """
+    params.append(limit)
+
+    cursor = await db.execute(query, params)
     questions = await cursor.fetchall()
     await cursor.close()
     await db.close()
-    
+
     return questions
 
 
@@ -714,3 +777,173 @@ async def delete_scheduled_quiz(quiz_id):
     
     await db.commit()
     await db.close()
+
+
+# =========================
+# SIMPLE QUIZ SCHEDULE (Daily Quiz)
+# =========================
+
+async def add_quiz_schedule(quiz_name, exam, date, time, duration, question_limit, created_by):
+    """Add a new quiz schedule"""
+    db = await get_db()
+    
+    cursor = await db.execute(
+        """
+        INSERT INTO quiz_schedule(quiz_name, exam, date, time, duration, question_limit, status, created_by)
+        VALUES(?,?,?,?,?,?,?,?)
+        """,
+        (quiz_name, exam, date, time, duration, question_limit, 'pending', created_by)
+    )
+    
+    quiz_id = cursor.lastrowid
+    await db.commit()
+    await db.close()
+    
+    return quiz_id
+
+
+async def get_quiz_schedule_by_id(quiz_id):
+    """Get quiz schedule by ID"""
+    db = await get_db()
+    
+    cursor = await db.execute(
+        """
+        SELECT id, quiz_name, exam, date, time, duration, question_limit, status
+        FROM quiz_schedule
+        WHERE id = ?
+        """,
+        (quiz_id,)
+    )
+    
+    quiz = await cursor.fetchone()
+    await cursor.close()
+    await db.close()
+    
+    return quiz
+
+
+async def get_all_quiz_schedules():
+    """Get all quiz schedules"""
+    db = await get_db()
+    
+    cursor = await db.execute(
+        """
+        SELECT id, quiz_name, exam, date, time, duration, question_limit, status
+        FROM quiz_schedule
+        ORDER BY date DESC, time DESC
+        """
+    )
+    
+    quizzes = await cursor.fetchall()
+    await cursor.close()
+    await db.close()
+    
+    return quizzes
+
+
+async def update_quiz_status(quiz_id, status):
+    """Update quiz status (pending, active, ended)"""
+    db = await get_db()
+    
+    await db.execute(
+        """
+        UPDATE quiz_schedule
+        SET status = ?
+        WHERE id = ?
+        """,
+        (status, quiz_id)
+    )
+    
+    await db.commit()
+    await db.close()
+
+
+async def delete_quiz_schedule(quiz_id):
+    """Delete a quiz schedule from the database"""
+    db = await get_db()
+    
+    await db.execute(
+        """
+        DELETE FROM quiz_schedule
+        WHERE id = ?
+        """,
+        (quiz_id,)
+    )
+    
+    await db.commit()
+    await db.close()
+
+
+async def save_quiz_result(quiz_id, user_id, correct, wrong, score):
+    """Save quiz result for a student"""
+    db = await get_db()
+    
+    await db.execute(
+        """
+        INSERT INTO quiz_results(quiz_id, user_id, correct, wrong, score)
+        VALUES(?,?,?,?,?)
+        """,
+        (quiz_id, user_id, correct, wrong, score)
+    )
+    
+    await db.commit()
+    await db.close()
+
+
+async def save_quiz_history(user_id, quiz_id, score, total_marks, accuracy):
+    """Save quiz history for user reporting"""
+    db = await get_db()
+    
+    await db.execute(
+        """
+        INSERT INTO quiz_history(user_id, quiz_id, score, total_marks, accuracy)
+        VALUES(?,?,?,?,?)
+        """,
+        (user_id, quiz_id, score, total_marks, accuracy)
+    )
+    
+    await db.commit()
+    await db.close()
+
+
+async def get_quiz_leaderboard(quiz_id, limit=10):
+    """Get top 10 scorers for a quiz"""
+    db = await get_db()
+    
+    cursor = await db.execute(
+        """
+        SELECT users.user_id, users.full_name, quiz_results.correct, quiz_results.wrong, quiz_results.score
+        FROM quiz_results
+        JOIN users ON quiz_results.user_id = users.user_id
+        WHERE quiz_results.quiz_id = ?
+        ORDER BY quiz_results.score DESC
+        LIMIT ?
+        """,
+        (quiz_id, limit)
+    )
+    
+    results = await cursor.fetchall()
+    await cursor.close()
+    await db.close()
+    
+    return results
+
+
+async def get_user_quiz_result(quiz_id, user_id):
+    """Get a specific user's quiz result"""
+    db = await get_db()
+    
+    cursor = await db.execute(
+        """
+        SELECT correct, wrong, score, submitted_at
+        FROM quiz_results
+        WHERE quiz_id = ? AND user_id = ?
+        """,
+        (quiz_id, user_id)
+    )
+    
+    result = await cursor.fetchone()
+    await cursor.close()
+    await db.close()
+    
+    return result
