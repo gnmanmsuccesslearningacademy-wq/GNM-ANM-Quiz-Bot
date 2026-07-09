@@ -1,6 +1,13 @@
 from app.database.connection import get_db
 
 
+async def column_exists(db, table_name: str, column_name: str) -> bool:
+    cursor = await db.execute(f"PRAGMA table_info({table_name})")
+    columns = await cursor.fetchall()
+    await cursor.close()
+    return any(column[1] == column_name for column in columns)
+
+
 # =========================
 # CREATE TABLES
 # =========================
@@ -53,6 +60,7 @@ async def create_tables():
     CREATE TABLE IF NOT EXISTS quiz_sessions(
         session_id INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id INTEGER,
+        quiz_id INTEGER,
         score REAL DEFAULT 0,
         current_question INTEGER DEFAULT 1,
         total_question INTEGER DEFAULT 50,
@@ -67,6 +75,34 @@ async def create_tables():
         FOREIGN KEY (user_id) REFERENCES users(user_id)
     )
     """)
+
+    if not await column_exists(db, 'quiz_sessions', 'session_id') or not await column_exists(db, 'quiz_sessions', 'quiz_id'):
+        await db.execute("ALTER TABLE quiz_sessions RENAME TO quiz_sessions_old")
+        await db.execute("""
+        CREATE TABLE quiz_sessions(
+            session_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            quiz_id INTEGER,
+            score REAL DEFAULT 0,
+            current_question INTEGER DEFAULT 1,
+            total_question INTEGER DEFAULT 50,
+            exam TEXT,
+            subject TEXT,
+            chapter TEXT,
+            difficulty TEXT,
+            quiz_type TEXT,
+            started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            ended_at TIMESTAMP,
+            status TEXT DEFAULT 'active',
+            FOREIGN KEY (user_id) REFERENCES users(user_id)
+        )
+        """)
+        await db.execute("""
+        INSERT INTO quiz_sessions(user_id, quiz_id, score, current_question, total_question, exam, subject, chapter, difficulty, quiz_type, started_at, ended_at, status)
+        SELECT user_id, NULL, score, current_question, total_question, exam, subject, chapter, NULL, NULL, started_at, NULL, 'active'
+        FROM quiz_sessions_old
+        """)
+        await db.execute("DROP TABLE quiz_sessions_old")
 
     # QUIZ RESPONSES (Track user answers)
     await db.execute("""
@@ -185,6 +221,7 @@ async def create_tables():
         date TEXT,
         time TEXT,
         duration INTEGER,
+        reminder_minutes INTEGER DEFAULT 15,
         question_limit INTEGER,
         status TEXT DEFAULT 'pending',
         group_message_id INTEGER,
@@ -192,6 +229,9 @@ async def create_tables():
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
     """)
+
+    if not await column_exists(db, 'quiz_schedule', 'reminder_minutes'):
+        await db.execute("ALTER TABLE quiz_schedule ADD COLUMN reminder_minutes INTEGER DEFAULT 15")
 
     # QUIZ RESULTS (Simple Quiz Results)
     await db.execute("""
@@ -783,16 +823,16 @@ async def delete_scheduled_quiz(quiz_id):
 # SIMPLE QUIZ SCHEDULE (Daily Quiz)
 # =========================
 
-async def add_quiz_schedule(quiz_name, exam, date, time, duration, question_limit, created_by):
+async def add_quiz_schedule(quiz_name, exam, date, time, duration, reminder_minutes, question_limit, created_by):
     """Add a new quiz schedule"""
     db = await get_db()
     
     cursor = await db.execute(
         """
-        INSERT INTO quiz_schedule(quiz_name, exam, date, time, duration, question_limit, status, created_by)
-        VALUES(?,?,?,?,?,?,?,?)
+        INSERT INTO quiz_schedule(quiz_name, exam, date, time, duration, reminder_minutes, question_limit, status, created_by)
+        VALUES(?,?,?,?,?,?,?,?,?)
         """,
-        (quiz_name, exam, date, time, duration, question_limit, 'pending', created_by)
+        (quiz_name, exam, date, time, duration, reminder_minutes, question_limit, 'pending', created_by)
     )
     
     quiz_id = cursor.lastrowid
@@ -802,13 +842,32 @@ async def add_quiz_schedule(quiz_name, exam, date, time, duration, question_limi
     return quiz_id
 
 
+async def add_quiz_session(user_id, quiz_id, total_question, exam, subject=None, chapter=None, difficulty=None, quiz_type='scheduled'):
+    """Create a quiz session row and return session_id"""
+    db = await get_db()
+
+    cursor = await db.execute(
+        """
+        INSERT INTO quiz_sessions(user_id, quiz_id, total_question, exam, subject, chapter, difficulty, quiz_type)
+        VALUES(?,?,?,?,?,?,?,?)
+        """,
+        (user_id, quiz_id, total_question, exam, subject, chapter, difficulty, quiz_type)
+    )
+
+    session_id = cursor.lastrowid
+    await db.commit()
+    await db.close()
+
+    return session_id
+
+
 async def get_quiz_schedule_by_id(quiz_id):
     """Get quiz schedule by ID"""
     db = await get_db()
     
     cursor = await db.execute(
         """
-        SELECT id, quiz_name, exam, date, time, duration, question_limit, status
+        SELECT id, quiz_name, exam, date, time, duration, reminder_minutes, question_limit, status, group_message_id
         FROM quiz_schedule
         WHERE id = ?
         """,
@@ -828,7 +887,7 @@ async def get_all_quiz_schedules():
     
     cursor = await db.execute(
         """
-        SELECT id, quiz_name, exam, date, time, duration, question_limit, status
+        SELECT id, quiz_name, exam, date, time, duration, reminder_minutes, question_limit, status, group_message_id
         FROM quiz_schedule
         ORDER BY date DESC, time DESC
         """
@@ -858,6 +917,23 @@ async def update_quiz_status(quiz_id, status):
     await db.close()
 
 
+async def update_quiz_group_message(quiz_id, message_id):
+    """Store the group message id (used to mark reminders/announcements sent)"""
+    db = await get_db()
+
+    await db.execute(
+        """
+        UPDATE quiz_schedule
+        SET group_message_id = ?
+        WHERE id = ?
+        """,
+        (message_id, quiz_id)
+    )
+
+    await db.commit()
+    await db.close()
+
+
 async def delete_quiz_schedule(quiz_id):
     """Delete a quiz schedule from the database"""
     db = await get_db()
@@ -870,6 +946,41 @@ async def delete_quiz_schedule(quiz_id):
         (quiz_id,)
     )
     
+    await db.commit()
+    await db.close()
+
+
+async def cleanup_quiz_sessions(quiz_id):
+    """Delete temporary session data after a scheduled quiz ends"""
+    db = await get_db()
+
+    cursor = await db.execute(
+        """
+        SELECT session_id
+        FROM quiz_sessions
+        WHERE quiz_id = ?
+        """,
+        (quiz_id,)
+    )
+    sessions = await cursor.fetchall()
+    await cursor.close()
+
+    if sessions:
+        session_ids = [str(s[0]) for s in sessions]
+        placeholders = ",".join("?" for _ in session_ids)
+        await db.execute(
+            f"DELETE FROM quiz_responses WHERE session_id IN ({placeholders})",
+            session_ids
+        )
+
+    await db.execute(
+        """
+        DELETE FROM quiz_sessions
+        WHERE quiz_id = ?
+        """,
+        (quiz_id,)
+    )
+
     await db.commit()
     await db.close()
 

@@ -13,6 +13,8 @@ from app.database.models import (
     get_quiz_leaderboard,
     update_quiz_status
 )
+
+from app.database.models import add_quiz_session
 from app.keyboards.contact import get_contact_keyboard
 from app.keyboards.main_menu import get_main_menu
 from aiogram.fsm.context import FSMContext
@@ -56,7 +58,7 @@ async def start_command(message: Message, state: FSMContext):
             await message.answer("❌ Quiz not found!", reply_markup=get_main_menu())
             return
         
-        quiz_id, quiz_name, exam, date, time_str, duration, question_limit, status = quiz
+        quiz_id, quiz_name, exam, date, time_str, duration, reminder_minutes, question_limit, status, group_message_id = quiz
         
         # Check quiz window
         schedule_datetime = datetime.strptime(f"{date} {time_str}", "%Y-%m-%d %H:%M")
@@ -68,6 +70,7 @@ async def start_command(message: Message, state: FSMContext):
                 f"⏳ Quiz has not started yet. Start time: {schedule_datetime.strftime('%Y-%m-%d %H:%M')}",
                 reply_markup=get_main_menu()
             )
+            return
             return
         
         if now >= end_datetime:
@@ -92,15 +95,27 @@ async def start_command(message: Message, state: FSMContext):
         
         # Fetch questions for this quiz
         questions = await get_questions_by_exam(exam, limit=question_limit)
-        
+
+        if not questions and quiz_name and quiz_name != exam:
+            questions = await get_questions_by_exam(quiz_name, limit=question_limit)
+
         if not questions:
             await message.answer(
-                f"❌ No questions available for this quiz!",
+                f"❌ No questions available for this quiz!\nScheduled exam key: {exam}\nQuiz name: {quiz_name}\nPlease check the scheduled exam name or reschedule with a valid exam name.",
                 reply_markup=get_main_menu()
             )
             return
         
         # Store quiz info in state
+        # Create DB quiz session for tracking
+        session_id = await add_quiz_session(
+            message.from_user.id,
+            quiz_id,
+            total_question=question_limit,
+            exam=exam,
+            quiz_type='scheduled'
+        )
+
         await state.update_data(
             quiz_id=quiz_id,
             quiz_name=quiz_name,
@@ -111,7 +126,8 @@ async def start_command(message: Message, state: FSMContext):
             wrong=0,
             user_answers={},
             start_time=schedule_datetime.isoformat(),
-            end_time=end_datetime.isoformat()
+            end_time=end_datetime.isoformat(),
+            session_id=session_id
         )
         
         await state.set_state(SimpleQuizStates.quiz_active)

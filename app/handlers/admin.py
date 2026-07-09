@@ -6,7 +6,7 @@ from aiogram.filters import Command
 from config import ADMIN_ID
 from app.states.upload_state import UploadQuestions
 from app.states.schedule_state import QuizScheduleStates
-from app.database.models import add_quiz_schedule
+from app.database.models import add_quiz_schedule, get_available_exams
 
 router = Router()
 
@@ -62,7 +62,7 @@ async def admin_schedule_quiz(callback_query, state: FSMContext):
     await callback_query.message.edit_text(
         """📅 **SCHEDULE NEW QUIZ**
 
-Step 1/6: Quiz Name
+Step 1/7: Quiz Name
 উদাহরণ: Daily Quiz #25
 """
     )
@@ -73,24 +73,48 @@ Step 1/6: Quiz Name
 async def schedule_quiz_name(message: Message, state: FSMContext):
     """Get quiz name"""
     
-    await state.update_data(quiz_name=message.text)
+    await state.update_data(
+        quiz_name=message.text
+    )
     await state.set_state(QuizScheduleStates.waiting_for_exam)
-    
+
+    available_exams = await get_available_exams()
+    exam_list_text = ''
+    if available_exams:
+        exam_list_text = '\n\nAvailable exam keys:\n' + '\n'.join(f'- {exam}' for exam in available_exams[:10])
+        if len(available_exams) > 10:
+            exam_list_text += '\n...and more'
+    else:
+        exam_list_text = '\n\nNo exam keys found yet. Make sure questions are uploaded first.'
+
     await message.answer(
-        """Step 2/6: Exam Name
-উদাহরণ: GNM ANM 2027"""
+        f"""Step 2/7: Exam Name
+Use the exam name that matches your uploaded questions.
+উদাহরণ: GNM ANM 2027{exam_list_text}"""
     )
 
 
 @router.message(QuizScheduleStates.waiting_for_exam)
 async def schedule_quiz_exam(message: Message, state: FSMContext):
-    """Get exam name"""
-    
-    await state.update_data(exam=message.text)
+    """Get exam key for questions"""
+    exam_text = message.text.strip()
+    available_exams = await get_available_exams()
+    normalized_exams = [exam.lower() for exam in available_exams]
+
+    if available_exams and exam_text.lower() not in normalized_exams:
+        exam_list_text = '\n'.join(f'- {exam}' for exam in available_exams[:10])
+        if len(available_exams) > 10:
+            exam_list_text += '\n...and more'
+        await message.answer(
+            f"❌ Invalid exam key. Please choose one of the available exam names below:\n{exam_list_text}"
+        )
+        return
+
+    await state.update_data(exam=exam_text)
     await state.set_state(QuizScheduleStates.waiting_for_date)
-    
+
     await message.answer(
-        """Step 3/6: Date
+        """Step 3/7: Date
 Format: YYYY-MM-DD
 উদাহরণ: 2026-07-10"""
     )
@@ -111,10 +135,32 @@ async def schedule_quiz_date(message: Message, state: FSMContext):
         return
     
     await state.update_data(date=date_text)
+    await state.set_state(QuizScheduleStates.waiting_for_reminder)
+    
+    await message.answer(
+        """Step 4/7: Reminder
+Reminder will be sent before the quiz starts.
+Enter minutes before start to notify group.
+উদাহরণ: 15"""
+    )
+
+
+@router.message(QuizScheduleStates.waiting_for_reminder)
+async def schedule_quiz_reminder(message: Message, state: FSMContext):
+    """Get reminder offset"""
+    try:
+        reminder_minutes = int(message.text.strip())
+        if reminder_minutes < 0:
+            raise ValueError
+    except ValueError:
+        await message.answer("❌ Invalid reminder time! Enter a non-negative number of minutes.")
+        return
+
+    await state.update_data(reminder_minutes=reminder_minutes)
     await state.set_state(QuizScheduleStates.waiting_for_time)
     
     await message.answer(
-        """Step 4/6: Time
+        """Step 5/7: Time
 Format: HH:MM (24-hour)
 উদাহরণ: 20:00"""
     )
@@ -138,7 +184,7 @@ async def schedule_quiz_time(message: Message, state: FSMContext):
     await state.set_state(QuizScheduleStates.waiting_for_duration)
     
     await message.answer(
-        """Step 5/6: Duration (in minutes)
+        """Step 4/7: Duration (in minutes)
 উদাহরণ: 20"""
     )
 
@@ -159,7 +205,7 @@ async def schedule_quiz_duration(message: Message, state: FSMContext):
     await state.set_state(QuizScheduleStates.waiting_for_questions)
     
     await message.answer(
-        """Step 6/6: Number of Questions
+        """Step 7/7: Number of Questions
 উদাহরণ: 20"""
     )
 
@@ -185,6 +231,7 @@ async def schedule_quiz_save(message: Message, state: FSMContext):
         date=data['date'],
         time=data['time'],
         duration=data['duration'],
+        reminder_minutes=data.get('reminder_minutes', 15),
         question_limit=question_limit,
         created_by=message.from_user.id
     )
@@ -199,6 +246,7 @@ async def schedule_quiz_save(message: Message, state: FSMContext):
 ⏰ Time: {data['time']}
 ⏱️ Duration: {data['duration']} minutes
 📊 Questions: {question_limit}
+⏰ Reminder: {data.get('reminder_minutes', 15)} মিনিট আগে
 🆔 Quiz ID: {quiz_id}
 
 Bot will automatically announce in the group at the scheduled time.
