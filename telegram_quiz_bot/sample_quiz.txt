@@ -1,0 +1,46 @@
+Question: SI unit of electric current is
+(a) Volt
+(b) Ohm
+(c) Ampere
+(d) Watt
+Answer: c
+
+Question: Which of these is a programming language?
+(a) Python
+(b) Mango
+Answer: a
+
+Question: Which of the following are SI base units? (select all that apply)
+(a) Metre
+(b) Newton
+(c) Kilogram
+(d) Joule
+Answer: a,c
+
+Question: Which of these are primary colours?
+(a) Red
+(b) Green
+(c) Blue
+(d) Black
+(e) Yellow
+Answer: a,c,e
+
+Question: SI unit of electric current is
+(a) Volt
+(b) Ohm
+(c) Ampere
+(d) Watt
+Answer: c
+
+Question: Which of these is a programming language?
+(a) Python
+(b) Mango
+Answer: a
+
+Question: Which of the following are SI base units? (select all that apply)
+(a) Metre
+(b) Newton
+(c) Kilogram
+(d) Joule
+Answer: a,c
+
